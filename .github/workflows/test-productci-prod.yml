@@ -1,0 +1,136 @@
+name: Product API CI - Production CRUD
+
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+    branches:
+      - main
+
+jobs:
+  crud-integration-test:
+    runs-on: ubuntu-latest
+
+    defaults:
+      run:
+        working-directory: PROMPT 1
+
+    services:
+      mongodb:
+        image: mongo:8
+        ports:
+          - 27017:27017
+        options: >-
+          --health-cmd "mongosh --quiet --eval 'db.adminCommand(\"ping\").ok'"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+          --health-start-period 10s
+
+    env:
+      PORT: 3000
+      MONGO_URI: mongodb://127.0.0.1:27017/productdb
+
+    steps:
+      - name: Checkout source code
+        uses: actions/checkout@v7
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v7
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: PROMPT 1/package-lock.json
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Check JavaScript syntax
+        run: |
+          node --check server.js
+          node --check models/Product.js
+
+      - name: Start Product API
+        run: |
+          nohup node server.js > server.log 2>&1 &
+
+          for i in {1..30}; do
+            if curl -fsS http://127.0.0.1:3000/health; then
+              echo
+              echo "Product API is healthy"
+              break
+            fi
+
+            echo "Waiting for Product API..."
+            sleep 2
+          done
+
+          curl --fail http://127.0.0.1:3000/health
+
+      - name: Run CRUD integration tests
+        run: |
+          set -e
+
+          echo "=== CREATE ==="
+          curl --fail-with-body -X POST http://127.0.0.1:3000/products \
+            -H "Content-Type: application/json" \
+            -d '{"pid":"CI001","pname":"CI Product","price":100000,"quantity":10}' \
+            > create.json
+
+          cat create.json
+
+          PRODUCT_ID=$(jq -r '.data._id' create.json)
+
+          if [ -z "$PRODUCT_ID" ] || [ "$PRODUCT_ID" = "null" ]; then
+            echo "Product ID was not created"
+            exit 1
+          fi
+
+          echo "Created PRODUCT_ID=$PRODUCT_ID"
+
+          echo "=== READ ALL ==="
+          curl --fail-with-body \
+            http://127.0.0.1:3000/products
+
+          echo
+          echo "=== READ ONE ==="
+          curl --fail-with-body \
+            http://127.0.0.1:3000/products/$PRODUCT_ID
+
+          echo
+          echo "=== UPDATE ==="
+          curl --fail-with-body -X PUT \
+            http://127.0.0.1:3000/products/$PRODUCT_ID \
+            -H "Content-Type: application/json" \
+            -d '{"pname":"CI Product Updated","price":150000,"quantity":20}'
+
+          echo
+          echo "=== DELETE ==="
+          curl --fail-with-body -X DELETE \
+            http://127.0.0.1:3000/products/$PRODUCT_ID
+
+          echo
+          echo "=== VERIFY DELETE ==="
+
+          RESPONSE=$(curl -sS \
+            -o /tmp/delete-check.json \
+            -w "%{http_code}" \
+            http://127.0.0.1:3000/products/$PRODUCT_ID)
+
+          cat /tmp/delete-check.json
+
+          if [ "$RESPONSE" = "404" ] && \
+             jq -e '.success == false and .message == "Product not found"' \
+             /tmp/delete-check.json > /dev/null; then
+            echo "CRUD integration test passed"
+          else
+            echo "DELETE verification failed"
+            exit 1
+          fi
+
+      - name: Show API logs on failure
+        if: failure()
+        run: |
+          echo "=== Product API logs ==="
+          cat server.log || true
