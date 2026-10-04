@@ -1,0 +1,34 @@
+services:
+  nammongodb:
+    image: mongo:latest
+    container_name: nammongodb-prod
+    ports:
+      - "27018:27017"
+    volumes:
+      - mongodb-prod-data:/data/db
+    healthcheck:
+      test: ["CMD-SHELL", "mongosh --quiet --eval \"db.adminCommand('ping')\""]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  product-api:
+    image: giahuy12/product-api:latest
+    container_name: product-api-prod
+    ports:
+      - "3001:3000"
+    environment:
+      PORT: 3000
+      MONGO_URI: mongodb://nammongodb-prod:27017/productdb
+    depends_on:
+      nammongodb:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "node", "-e", "require('http').get('http://127.0.0.1:3000/health', r => process.exit(r.statusCode === 200 ? 0 : 1)).on('error', () => process.exit(1))"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+      start_period: 10s
+
+volumes:
+  mongodb-prod-data:
