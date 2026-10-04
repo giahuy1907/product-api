@@ -1,0 +1,174 @@
+name: Product API Production CI
+
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+    branches:
+      - main
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+
+    services:
+      mongodb:
+        image: mongo:latest
+        ports:
+          - 27017:27017
+        options: >-
+          --health-cmd "mongosh --quiet --eval \"db.adminCommand('ping')\""
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+
+    steps:
+      - name: Checkout source code
+        uses: actions/checkout@v6
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v7
+        with:
+          node-version: "24"
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Check server.js syntax
+        run: node --check server.js
+
+      - name: Check Product model syntax
+        run: node --check models/Product.js
+
+      - name: Start Product API
+        env:
+          PORT: 3000
+          MONGO_URI: mongodb://localhost:27017/productdb
+        run: |
+          node server.js > server.log 2>&1 &
+          echo $! > server.pid
+
+      - name: Wait for Product API
+        run: |
+          for i in {1..30}; do
+            if curl -fsS http://localhost:3000/health; then
+              echo
+              echo "Product API is ready"
+              exit 0
+            fi
+            sleep 2
+          done
+
+          echo "Product API failed to start"
+          cat server.log
+          exit 1
+
+      - name: Test CREATE
+        run: |
+          response=$(curl -fsS -X POST http://localhost:3000/products \
+            -H "Content-Type: application/json" \
+            -d '{"pid":"PROD001","pname":"Laptop","price":15000000,"quantity":10}')
+
+          echo "$response"
+
+          node -e "
+          const data = JSON.parse(process.argv[1]);
+          if (
+            data.success !== true ||
+            data.data.pid !== 'PROD001' ||
+            data.data.pname !== 'Laptop' ||
+            data.data.price !== 15000000 ||
+            data.data.quantity !== 10
+          ) {
+            process.exit(1);
+          }
+          " "$response"
+
+      - name: Test READ
+        run: |
+          response=$(curl -fsS http://localhost:3000/products)
+
+          echo "$response"
+
+          node -e "
+          const data = JSON.parse(process.argv[1]);
+          if (
+            data.success !== true ||
+            !Array.isArray(data.data) ||
+            !data.data.some(p => p.pid === 'PROD001')
+          ) {
+            process.exit(1);
+          }
+          " "$response"
+
+      - name: Test READ by pid
+        run: |
+          response=$(curl -fsS http://localhost:3000/products/PROD001)
+
+          echo "$response"
+
+          node -e "
+          const data = JSON.parse(process.argv[1]);
+          if (
+            data.success !== true ||
+            data.data.pid !== 'PROD001'
+          ) {
+            process.exit(1);
+          }
+          " "$response"
+
+      - name: Test UPDATE
+        run: |
+          response=$(curl -fsS -X PUT http://localhost:3000/products/PROD001 \
+            -H "Content-Type: application/json" \
+            -d '{"price":16000000,"quantity":15}')
+
+          echo "$response"
+
+          node -e "
+          const data = JSON.parse(process.argv[1]);
+          if (
+            data.success !== true ||
+            data.data.price !== 16000000 ||
+            data.data.quantity !== 15
+          ) {
+            process.exit(1);
+          }
+          " "$response"
+
+      - name: Test DELETE
+        run: |
+          response=$(curl -fsS -X DELETE http://localhost:3000/products/PROD001)
+
+          echo "$response"
+
+          node -e "
+          const data = JSON.parse(process.argv[1]);
+          if (
+            data.success !== true ||
+            data.message !== 'Product deleted successfully'
+          ) {
+            process.exit(1);
+          }
+          " "$response"
+
+      - name: Verify DELETE
+        run: |
+          response=$(curl -fsS http://localhost:3000/products)
+
+          echo "$response"
+
+          node -e "
+          const data = JSON.parse(process.argv[1]);
+          if (
+            data.success !== true ||
+            data.data.some(p => p.pid === 'PROD001')
+          ) {
+            process.exit(1);
+          }
+          " "$response"
+
+      - name: Show API log
+        if: always()
+        run: cat server.log
