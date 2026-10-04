@@ -27,5 +27,8 @@ jobs:
       - name: Check server.js syntax
         run: node --check server.js
 
+      - name: Check Product model syntax
+        run: node --check models/Product.js
+
       - name: CI test passed
         run: echo "Product API CI test passed"
