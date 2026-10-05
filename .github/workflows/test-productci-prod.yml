@@ -24,6 +24,7 @@ jobs:
           --health-retries 10
 
     steps:
+
       - name: Checkout source code
         uses: actions/checkout@v6
 
@@ -168,6 +169,10 @@ jobs:
             process.exit(1);
           }
           " "$response"
+      - name: Run CRUD test script
+        env:
+          API_URL: http://localhost:3000
+        run: npm run test:crud
 
       - name: Show API log
         if: always()
